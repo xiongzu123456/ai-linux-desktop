@@ -1,0 +1,13 @@
+{
+  "name": "ai-linux-desktop",
+  "version": "1.0",
+  "distro": "alpine",
+  "desktop": "xfce4",
+  "display": "xvfb + x11vnc",
+  "vnc_host": "127.0.0.1",
+  "vnc_port": 5901,
+  "install_script": "https://raw.githubusercontent.com/xiongzu123456/ai-linux-desktop/main/install-desktop.sh",
+  "start_script": "https://raw.githubusercontent.com/xiongzu123456/ai-linux-desktop/main/start-desktop.sh",
+  "approx_download_mb": "200-400",
+  "approx_space_mb": 3000
+}
