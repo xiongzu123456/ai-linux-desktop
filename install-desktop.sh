@@ -1,45 +1,59 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Termux: 安装 Alpine + Xfce 桌面 + VNC
-set -e
+# 一键装桌面：下载 Alpine rootfs -> 解压 -> 装 Xfce + VNC。
+# 已有 rootfs 想离线装：bash install-from-file.sh /sdcard/Download/alpine-minirootfs-xxx.tar.gz
+set -u
+VER_SHORT="${ALPINE_BRANCH:-v3.21}"
+VER_FULL="${ALPINE_VER:-3.21.3}"
+MIRROR="${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}"
+HERE="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 
-PKGS="xfce4 xfce4-terminal xvfb x11vnc dbus font-noto-cjk ttf-dejavu bash"
+say() { printf '\n\033[1;36m%s\033[0m\n' "$*"; }
+die() { printf '\n\033[1;31m%s\033[0m\n' "$*"; exit 1; }
 
-echo "[1/4] 更新 Termux 软件源"
-pkg update -y
-pkg install -y proot-distro
+case "$(uname -m)" in
+  aarch64|arm64) ARCH=aarch64 ;;
+  armv7l|armv8l|arm) ARCH=armv7 ;;
+  x86_64|amd64) ARCH=x86_64 ;;
+  *) die "不支持的架构: $(uname -m)" ;;
+esac
+URL="$MIRROR/$VER_SHORT/releases/$ARCH/alpine-minirootfs-$VER_FULL-$ARCH.tar.gz"
+say "架构 $ARCH"; say "rootfs: $URL"
 
-echo "[2/4] 安装 Alpine 容器（首次约 3-10 分钟）"
-if proot-distro list | grep -q alpine; then
-  echo "  alpine 已存在，跳过"
+command -v curl >/dev/null 2>&1 || pkg install -y curl || die "装 curl 失败"
+command -v proot >/dev/null 2>&1 || pkg install -y proot || die "装 proot 失败"
+
+mkdir -p "$HOME/linux"
+TAR="$HOME/linux/.rootfs.tar.gz"
+if [ -x "$HOME/linux/alpine/bin/sh" ]; then
+  say "检测到已装好的 rootfs，跳过下载"
+elif [ -f "$TAR" ] && [ "$(wc -c < "$TAR")" -gt 1000000 ]; then
+  say "复用已下载的 $TAR"
 else
-  proot-distro install alpine
+  say "下载 rootfs（约 4MB）"
+  curl -fL --progress-bar "$URL" -o "$TAR" || die "下载失败。换镜像：ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine bash $0"
 fi
 
-echo "[3/4] 在 Alpine 里安装 Xfce 与 VNC（首次约 5-20 分钟）"
-proot-distro login alpine -- /bin/sh -c "apk update && apk add --no-cache $PKGS"
+if [ ! -x "$HOME/linux/alpine/bin/sh" ]; then
+  say "解压 rootfs"
+  mkdir -p "$HOME/linux/alpine"
+  proot --link2symlink tar -xzf "$TAR" -C "$HOME/linux/alpine" --no-same-owner >/dev/null 2>&1 \
+    || tar -xzf "$TAR" -C "$HOME/linux/alpine" --no-same-owner >/dev/null 2>&1 \
+    || die "解压失败，删掉 $TAR 重下"
+  [ -x "$HOME/linux/alpine/bin/sh" ] || die "rootfs 不完整"
+fi
 
-echo "[4/4] 生成启动脚本"
-cat > "$HOME/start-desktop.sh" <<'START'
+cat > "$HOME/linux/enter.sh" <<EOS
 #!/data/data/com.termux/files/usr/bin/bash
-# 启动 Alpine 桌面：Xvfb + Xfce + x11vnc（监听 127.0.0.1:5901）
-echo "正在启动桌面..."
-proot-distro login alpine -- /bin/sh -c '
-export DISPLAY=:1
-export XDG_RUNTIME_DIR=/tmp/runtime-root
-mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
-Xvfb :1 -screen 0 1280x720x24 >/tmp/xvfb.log 2>&1 &
-sleep 2
-( dbus-launch --sh-syntax >/tmp/dbus.env 2>/dev/null; . /tmp/dbus.env 2>/dev/null; xfce4-session >/tmp/xfce.log 2>&1 & )
-sleep 3
-x11vnc -display :1 -forever -shared -nopw -rfbport 5901 -localhost -quiet >/tmp/vnc.log 2>&1 &
-sleep 1
-echo "VNC 就绪：127.0.0.1:5901（用 VNC 客户端连接）"
-wait
-'
-START
-chmod +x "$HOME/start-desktop.sh"
+proot -0 --link2symlink -r "\$HOME/linux/alpine" -b /dev -b /proc -b /sys -b "\$HOME:/home/termux" -w /root \\
+  /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color /bin/sh -l "\$@"
+EOS
+chmod +x "$HOME/linux/enter.sh"
 
-echo ""
-echo "安装完成。"
-echo "启动桌面：bash ~/start-desktop.sh"
-echo "然后用 VNC 客户端连接 127.0.0.1:5901"
+say "安装桌面组件（首次 5-15 分钟）"
+bash "$HOME/linux/enter.sh" -c "printf 'nameserver 223.5.5.5\nnameserver 8.8.8.8\n' > /etc/resolv.conf; apk update && apk add xorg-server xfce4 xfce4-terminal x11vnc xvfb dbus ttf-dejavu" \
+  || say "apk 安装失败（多半 DNS/网络）：进 Linux 后手动 apk add xfce4 x11vnc xvfb"
+
+cp -f "$HERE/start-desktop.sh" "$HOME/start-desktop.sh" 2>/dev/null || true
+[ -x "$HOME/start-desktop.sh" ] || die "缺 start-desktop.sh，从仓库再下一次"
+
+printf '\n\033[1;32m完成。\033[0m 桌面: bash ~/start-desktop.sh（VNC 连 127.0.0.1:5901）  终端: bash ~/linux/enter.sh\n'
